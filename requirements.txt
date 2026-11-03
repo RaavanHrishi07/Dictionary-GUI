@@ -1,2 +1,4 @@
 PyDictionary
 requests
+pygame
+gTTS

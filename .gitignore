@@ -5,3 +5,4 @@ venv/
 .env
 favourites.json
 apple_test.mp3
+history.json

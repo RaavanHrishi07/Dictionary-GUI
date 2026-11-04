@@ -6,9 +6,12 @@ import threading
 import requests
 import pygame
 from gtts import gTTS
+import json
+import os
 
 API_URL = "https://api.dictionaryapi.dev/api/v2/entries/en/{}"
 SUGGEST_URL = "https://api.datamuse.com/sug"
+FAVOURITES_FILE = "favourites.json"
 
 
 class DictionaryApp:
@@ -23,6 +26,10 @@ class DictionaryApp:
         self.status = tk.StringVar(value="Enter a word to get started.")
 
         self.history = []
+        self.favourites = self.load_favourites()
+        self.favourites_window = None
+        self.favourites_list = None
+
         self.current_word = ""
         self.audio_data = None
         self.audio_key = None
@@ -40,6 +47,272 @@ class DictionaryApp:
         self.accent.trace_add("write", self.on_accent_changed)
 
         self.root.protocol("WM_DELETE_WINDOW", self.close_application)
+
+    # -------- FAVOURITES STORAGE --------
+
+    def load_favourites(self):
+        if not os.path.exists(FAVOURITES_FILE):
+            return []
+
+        try:
+            with open(FAVOURITES_FILE, "r", encoding="utf-8") as file:
+                data = json.load(file)
+
+            if isinstance(data, list):
+                return list(dict.fromkeys(
+                    word for word in data
+                    if isinstance(word, str) and word.strip()
+                ))
+
+        except (json.JSONDecodeError, OSError) as error:
+            print("Favourite Loading Error:", error)
+
+        return []
+
+    def save_favourites(self):
+        try:
+            with open(FAVOURITES_FILE, "w", encoding="utf-8") as file:
+                json.dump(
+                    self.favourites,
+                    file,
+                    indent=4,
+                    ensure_ascii=False
+                )
+            return True
+
+        except OSError as error:
+            print("Favourite Saving Error:", error)
+            messagebox.showerror(
+                "Storage Error",
+                "Could not save favourite words."
+            )
+            return False
+
+    def add_favourite(self):
+        if not self.current_word:
+            messagebox.showinfo(
+                "No Word Selected",
+                "Search for a word before adding it to favourites."
+            )
+            return
+
+        if self.current_word in self.favourites:
+            messagebox.showinfo(
+                "Already Added",
+                f"'{self.current_word}' is already in your favourites."
+            )
+            return
+
+        self.favourites.insert(0, self.current_word)
+
+        if self.save_favourites():
+            self.update_favourites_button()
+            self.refresh_favourites_list()
+
+            self.status.set(
+                f"'{self.current_word}' added to favourites."
+            )
+
+    def remove_favourite(self):
+        if self.favourites_list is None:
+            return
+
+        selection = self.favourites_list.curselection()
+
+        if not selection:
+            messagebox.showinfo(
+                "Select a Word",
+                "Please select a favourite word to remove."
+            )
+            return
+
+        selected_word = self.favourites_list.get(selection[0])
+
+        self.favourites.remove(selected_word)
+
+        if self.save_favourites():
+            self.refresh_favourites_list()
+            self.update_favourites_button()
+            self.status.set(
+                f"'{selected_word}' removed from favourites."
+            )
+
+    def update_favourites_button(self):
+        if not hasattr(self, "favourite_button"):
+            return
+
+        if self.current_word in self.favourites:
+            self.favourite_button.configure(
+                text="★ Remove Favourite",
+                command=self.remove_current_favourite
+            )
+        else:
+            self.favourite_button.configure(
+                text="☆ Add to Favourites",
+                command=self.add_favourite
+            )
+
+    def remove_current_favourite(self):
+        if self.current_word not in self.favourites:
+            return
+
+        if not messagebox.askyesno(
+            "Remove Favourite",
+            f"Remove '{self.current_word}' from favourites?"
+        ):
+            return
+
+        self.favourites.remove(self.current_word)
+
+        if self.save_favourites():
+            self.update_favourites_button()
+            self.refresh_favourites_list()
+            self.status.set(
+                f"'{self.current_word}' removed from favourites."
+            )
+
+    def open_favourites(self):
+        if (
+            self.favourites_window is not None
+            and self.favourites_window.winfo_exists()
+        ):
+            self.favourites_window.lift()
+            self.refresh_favourites_list()
+            return
+
+        window = tk.Toplevel(self.root)
+        self.favourites_window = window
+
+        window.title("My Favourite Words")
+        window.geometry("400x450")
+        window.minsize(320, 350)
+        window.transient(self.root)
+
+        ttk.Label(
+            window,
+            text="★ MY FAVOURITE WORDS",
+            font=("Segoe UI", 16, "bold"),
+            foreground="#2457D6"
+        ).pack(pady=(18, 5))
+
+        ttk.Label(
+            window,
+            text="Double-click a word to search its meaning.",
+            font=("Segoe UI", 9)
+        ).pack(pady=(0, 12))
+
+        list_frame = ttk.Frame(window, padding=(15, 0, 15, 10))
+        list_frame.pack(fill="both", expand=True)
+
+        self.favourites_list = tk.Listbox(
+            list_frame,
+            font=("Segoe UI", 12),
+            selectmode=tk.SINGLE,
+            activestyle="dotbox",
+            exportselection=False
+        )
+        self.favourites_list.pack(
+            side="left",
+            fill="both",
+            expand=True
+        )
+
+        scrollbar = ttk.Scrollbar(
+            list_frame,
+            orient="vertical",
+            command=self.favourites_list.yview
+        )
+        scrollbar.pack(side="right", fill="y")
+
+        self.favourites_list.configure(
+            yscrollcommand=scrollbar.set
+        )
+
+        self.favourites_list.bind(
+            "<Double-Button-1>",
+            self.search_selected_favourite
+        )
+        self.favourites_list.bind(
+            "<Return>",
+            self.search_selected_favourite
+        )
+
+        button_frame = ttk.Frame(window, padding=10)
+        button_frame.pack(fill="x")
+
+        ttk.Button(
+            button_frame,
+            text="Search Word",
+            command=self.search_selected_favourite
+        ).pack(side="left", padx=5, expand=True)
+
+        ttk.Button(
+            button_frame,
+            text="Remove",
+            command=self.remove_favourite
+        ).pack(side="left", padx=5, expand=True)
+
+        ttk.Button(
+            button_frame,
+            text="Close",
+            command=window.destroy
+        ).pack(side="left", padx=5, expand=True)
+
+        window.protocol(
+            "WM_DELETE_WINDOW",
+            self.close_favourites_window
+        )
+
+        self.refresh_favourites_list()
+
+    def close_favourites_window(self):
+        if self.favourites_window is not None:
+            self.favourites_window.destroy()
+
+        self.favourites_window = None
+        self.favourites_list = None
+
+    def refresh_favourites_list(self):
+        if (
+            self.favourites_window is None
+            or not self.favourites_window.winfo_exists()
+            or self.favourites_list is None
+        ):
+            return
+
+        self.favourites_list.delete(0, tk.END)
+
+        if not self.favourites:
+            self.favourites_list.insert(
+                tk.END,
+                "No favourite words yet."
+            )
+            return
+
+        for word in self.favourites:
+            self.favourites_list.insert(tk.END, word)
+
+    def search_selected_favourite(self, event=None):
+        if self.favourites_list is None:
+            return "break"
+
+        selection = self.favourites_list.curselection()
+
+        if not selection:
+            return "break"
+
+        selected_word = self.favourites_list.get(selection[0])
+
+        if selected_word not in self.favourites:
+            return "break"
+
+        self.close_favourites_window()
+        self.word.set(selected_word)
+        self.search_word()
+
+        return "break"
+
+    # -------- USER INTERFACE --------
 
     def setup_ui(self):
         main = ttk.Frame(self.root, padding=20)
@@ -86,7 +359,7 @@ class DictionaryApp:
             command=self.clear_search
         ).pack(side="left", padx=4)
 
-        # Autocomplete suggestion list
+        # Autocomplete suggestions
         self.suggestion_frame = ttk.Frame(main)
 
         self.suggestion_list = tk.Listbox(
@@ -139,6 +412,24 @@ class DictionaryApp:
             state="disabled"
         )
         self.stop_button.pack(side="left")
+
+        # Favourite controls
+        favourite_frame = ttk.Frame(main)
+        favourite_frame.pack(fill="x", pady=(0, 12))
+
+        self.favourite_button = ttk.Button(
+            favourite_frame,
+            text="☆ Add to Favourites",
+            command=self.add_favourite,
+            state="disabled"
+        )
+        self.favourite_button.pack(side="left", padx=(0, 8))
+
+        ttk.Button(
+            favourite_frame,
+            text="★ View Favourites",
+            command=self.open_favourites
+        ).pack(side="left")
 
         history_frame = ttk.Frame(main)
         history_frame.pack(fill="x", pady=(0, 12))
@@ -211,9 +502,12 @@ class DictionaryApp:
         )
         self.search_entry.focus_set()
 
+    # -------- THREAD HELPER --------
+
     def post_to_ui(self, callback):
         if self.closing:
             return
+
         try:
             self.root.after(0, callback)
         except RuntimeError:
@@ -271,6 +565,7 @@ class DictionaryApp:
                     query, request_id, words
                 )
             )
+
         except (requests.RequestException, ValueError) as error:
             print("Suggestion Error:", error)
 
@@ -367,6 +662,9 @@ class DictionaryApp:
         self.reset_audio()
         self.current_word = search_term
 
+        self.update_favourites_button()
+        self.favourite_button.configure(state="disabled")
+
         self.search_button.configure(state="disabled")
         self.status.set(f"Searching for '{search_term}'...")
 
@@ -420,6 +718,7 @@ class DictionaryApp:
 
         except (requests.RequestException, ValueError) as error:
             print("API Error:", error)
+
             self.post_to_ui(
                 lambda: self.show_error(
                     "Something went wrong while fetching the meaning.",
@@ -527,6 +826,8 @@ class DictionaryApp:
 
         self.play_button.configure(state="normal")
         self.search_button.configure(state="normal")
+        self.favourite_button.configure(state="normal")
+        self.update_favourites_button()
 
         self.status.set(
             f"Successfully loaded meaning for '{search_term}'."
@@ -558,8 +859,10 @@ class DictionaryApp:
             try:
                 pygame.mixer.init()
                 self.mixer_initialized = True
+
             except pygame.error as error:
                 print("Audio Initialization Error:", error)
+
                 messagebox.showerror(
                     "Audio Error",
                     "Unable to initialize the audio player."
@@ -609,6 +912,7 @@ class DictionaryApp:
 
         except Exception as error:
             print("Audio Generation Error:", error)
+
             self.post_to_ui(
                 lambda: self.audio_generation_failed(request_id)
             )
@@ -627,6 +931,7 @@ class DictionaryApp:
             return
 
         self.audio_loading = False
+
         self.play_button.configure(
             state="normal",
             text="🔊 Play Pronunciation"
@@ -677,8 +982,10 @@ class DictionaryApp:
             f"No definition found for '{search_term}'.\n\n"
             "Please check the spelling and try another word."
         )
+
         self.status.set("Word not found.")
         self.search_button.configure(state="normal")
+        self.favourite_button.configure(state="disabled")
 
     def show_error(self, message, request_id):
         if request_id != self.search_id:
@@ -687,6 +994,7 @@ class DictionaryApp:
         self.show_message(message)
         self.status.set("Search failed.")
         self.search_button.configure(state="normal")
+        self.favourite_button.configure(state="disabled")
 
     def clear_search(self):
         self.search_id += 1
@@ -700,6 +1008,12 @@ class DictionaryApp:
         self.current_word = ""
         self.hide_suggestions()
         self.reset_audio()
+
+        self.favourite_button.configure(
+            state="disabled",
+            text="☆ Add to Favourites",
+            command=self.add_favourite
+        )
 
         self.show_message(
             "Enter an English word above and click Search."
